@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script>
+      performance.mark("code/didStartRenderer");
+    </script>
+    <meta charset="utf-8" />
+
+    <!-- Mobile tweaks -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Code" />
+    <link rel="apple-touch-icon" href="https://raw.esm.sh/code-oss@1.108.1/code-192.png" />
+
+    <!-- Disable pinch zooming -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no"
+    />
+
+    <!-- Workbench Icon/Manifest/CSS -->
+    <link rel="icon" href="https://raw.esm.sh/code-oss@1.108.1/favicon.ico" type="image/x-icon" />
+    <link rel="stylesheet" href="https://raw.esm.sh/code-oss@1.108.1/out/vs/workbench/workbench.web.main.internal.css" />
+  </head>
+
+  <body aria-label=""></body>
+
+  <!-- Startup (do not modify order of script tags!) -->
+  <script>
+    const baseUrl = new URL("https://raw.esm.sh/code-oss@1.108.1/out/", window.location.href);
+    globalThis._VSCODE_FILE_ROOT = baseUrl.origin + baseUrl.pathname;
+  </script>
+  <script>
+    performance.mark("code/willLoadWorkbenchMain");
+  </script>
+  <!-- always ensure built in english NLS messages -->
+  <script type="module" src="https://raw.esm.sh/code-oss@1.108.1/out/nls.messages.js"></script>
+  <!-- attempt to load NLS messages in case non-english -->
+  <script type="module" src="https://raw.esm.sh/code-oss@1.108.1/out/nls.messages.js"></script>
+  <script type="module">
+    import init from "https://raw.esm.sh/code-oss@1.108.1/workbench.js";
+
+    // Parse hash route: #/owner/repo or #/owner/repo@branch
+    function parseHashRoute() {
+      let hash = window.location.hash.slice(1); // Remove #
+      if (!hash) {
+        // Default to microsoft/vscode main branch
+        return { owner: "microsoft", repo: "vscode", branch: "main" };
+      }
+
+      // Remove leading slash if present
+      hash = hash.replace(/^\/+/, "");
+      
+      // Format: owner/repo@branch or owner/repo (defaults to main)
+      let owner, repo, branch;
+      
+      if (hash.includes("@")) {
+        // Format: owner/repo@branch
+        const atSplit = hash.split("@");
+        const beforeAt = atSplit[0];
+        branch = atSplit[1] || "main";
+        
+        const parts = beforeAt.split("/").filter(Boolean);
+        if (parts.length !== 2) {
+          console.error("Invalid hash route. Expected: #/owner/repo or #/owner/repo@branch");
+          return null;
+        }
+        owner = parts[0];
+        repo = parts[1];
+      } else {
+        // Format: owner/repo (defaults to main branch)
+        const parts = hash.split("/").filter(Boolean);
+        if (parts.length !== 2) {
+          console.error("Invalid hash route. Expected: #/owner/repo or #/owner/repo@branch");
+          return null;
+        }
+        owner = parts[0];
+        repo = parts[1];
+        branch = "main";
+      }
+
+      return { owner, repo, branch };
+    }
+
+    const repoInfo = parseHashRoute();
+    if (!repoInfo) {
+      document.body.textContent = "Invalid repository URL. Expected: #/owner/repo or #/owner/repo@branch";
+    }
+
+    init(document.body, {
+      productConfiguration: {
+        extensionsGallery: {
+          serviceUrl: "https://open-vsx.org/vscode/gallery",
+          itemUrl: "https://open-vsx.org/vscode/item",
+          resourceUrlTemplate: "https://openvsxorg.blob.core.windows.net/resources/{publisher}/{name}/{version}/{path}",
+        },
+        extensionEnabledApiProposals: {},
+        /** IMPORTANT CONFIG TO MAKE webWorkerExtensionHostIframe.html work */
+        webEndpointUrlTemplate: "https://unpkg.com/code-oss@1.108.1",
+        quality: "stable",
+      },
+      folderUri: {
+        scheme: "memfs",
+        authority: repoInfo ? repoInfo.owner : "",
+        query: "",
+        path: repoInfo ? `/${repoInfo.repo}/${repoInfo.branch}` : "/",
+      },
+      additionalBuiltinExtensions: [
+        {
+          scheme: location.protocol.replace(":", ""),
+          authority: location.host,
+          path: location.pathname + "extension/dist",
+        },
+      ],
+    });
+
+    // Listen for hash changes
+    window.addEventListener("hashchange", () => {
+      const newRepoInfo = parseHashRoute();
+      if (newRepoInfo) {
+        // Reload the workspace with new repository
+        window.location.reload();
+      }
+    });
+  </script>
+</html>

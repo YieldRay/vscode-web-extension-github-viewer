@@ -1,0 +1,64 @@
+{
+  "name": "github-viewer",
+  "displayName": "GitHub Viewer",
+  "description": "A read-only GitHub repository viewer for VS Code Web",
+  "version": "0.0.1",
+  "publisher": "YieldRay",
+  "private": true,
+  "files": [
+    "package.nls.json",
+    "dist"
+  ],
+  "engines": {
+    "vscode": "^1.108.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onFileSystem:memfs"
+  ],
+  "main": "./extension.js",
+  "browser": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "githubViewer.switchRepository",
+        "title": "Switch Repository",
+        "category": "GitHub Viewer"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "githubViewer.switchRepository",
+          "when": "workbenchState == workspace"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "compile-web": "webpack",
+    "watch-web": "webpack --watch",
+    "package-web": "webpack --mode production --devtool hidden-source-map"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "@zenfs/core": "^2.4.4",
+    "@zenfs/dom": "^1.2.7",
+    "assert": "^2.1.0",
+    "buffer": "^6.0.3",
+    "path-browserify": "^1.0.1",
+    "process": "^0.11.10"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.7",
+    "@types/vscode": "^1.108.1",
+    "esbuild-loader": "^4.4.2",
+    "esbuild-register": "^3.6.0",
+    "webpack": "^5.104.1",
+    "webpack-cli": "^6.0.1"
+  }
+}
