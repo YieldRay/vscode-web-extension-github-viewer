@@ -12,27 +12,51 @@ import { GitHubClient } from "./github";
 interface ParsedRepositoryUri {
   owner: string;
   repo: string;
-  branch: string;
+  branch: string; // may be empty if not yet resolved
   repoPath: string;
 }
 
 /**
- * Parse repository info and repo-relative path from a memfs URI.
- * Format: memfs://{owner}/{repo}/{branch}/optional/path/to/file
+ * Parse repository info and file path from a github:// URI.
+ * Authority format: owner/repo@branch (percent-encoded).
+ *   - owner and repo are separated by the first "/"
+ *   - repo and branch are separated by the first "@" after the "/"
+ *   - branch may be empty (to be resolved via API)
+ * Path: purely the file/directory path within the repo.
  */
 function parseRepositoryFromUri(uri: vscode.Uri): ParsedRepositoryUri | null {
-  const owner = uri.authority;
-  const segments = uri.path.split("/").filter(Boolean);
-  if (!owner || segments.length < 2) {
+  const rawAuthority = decodeURIComponent(uri.authority);
+  if (!rawAuthority) {
     return null;
   }
-  const [repo, branch, ...rest] = segments;
-  return {
-    owner,
-    repo,
-    branch,
-    repoPath: rest.join("/"),
-  };
+
+  const slashIndex = rawAuthority.indexOf("/");
+  if (slashIndex === -1) {
+    return null;
+  }
+
+  const owner = rawAuthority.slice(0, slashIndex);
+  const rest = rawAuthority.slice(slashIndex + 1);
+
+  let repo: string;
+  let branch: string;
+  const atIndex = rest.indexOf("@");
+  if (atIndex !== -1) {
+    repo = rest.slice(0, atIndex);
+    branch = rest.slice(atIndex + 1);
+  } else {
+    repo = rest;
+    branch = "";
+  }
+
+  if (!owner || !repo) {
+    return null;
+  }
+
+  // Path is the file path within the repo (strip leading slash)
+  const repoPath = uri.path.replace(/^\/+/, "");
+
+  return { owner, repo, branch, repoPath };
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -47,21 +71,26 @@ export async function activate(context: vscode.ExtensionContext) {
   const parsed = parseRepositoryFromUri(workspaceFolder.uri);
   if (!parsed) {
     vscode.window.showErrorMessage(
-      "Invalid workspace URI. Expected format: memfs://owner/repo/branch"
+      "Invalid workspace URI. Expected authority format: owner/repo@branch"
     );
     return;
   }
 
   const githubClient = new GitHubClient();
-  githubClient.setRepository(parsed.owner, parsed.repo, parsed.branch);
 
-  // Verify repository and branch exist before proceeding
+  // Resolve branch: if not specified in the URL, fetch the repo's default branch
+  let branch = parsed.branch;
   try {
-    await githubClient.getRepositoryInfo();
+    if (!branch) {
+      branch = await githubClient.getDefaultBranch(parsed.owner, parsed.repo);
+    }
+    githubClient.setRepository(parsed.owner, parsed.repo, branch);
+
+    // Verify branch exists
     const branches = await githubClient.getBranches();
-    if (!branches.includes(parsed.branch)) {
+    if (!branches.includes(branch)) {
       vscode.window.showErrorMessage(
-        `Branch "${parsed.branch}" not found in ${parsed.owner}/${parsed.repo}. Available branches: ${branches.slice(0, 5).join(", ")}${branches.length > 5 ? "..." : ""}`
+        `Branch "${branch}" not found in ${parsed.owner}/${parsed.repo}. Available branches: ${branches.slice(0, 5).join(", ")}${branches.length > 5 ? "..." : ""}`
       );
       return;
     }
@@ -85,11 +114,11 @@ export async function activate(context: vscode.ExtensionContext) {
     return;
   }
 
-  const gitHubFS = new GitHubFileSystem("memfs", githubClient);
+  const gitHubFS = new GitHubFileSystem("github", githubClient);
   context.subscriptions.push(gitHubFS);
 
   context.subscriptions.push(
-    vscode.workspace.registerFileSystemProvider("memfs", gitHubFS, {
+    vscode.workspace.registerFileSystemProvider("github", gitHubFS, {
       isCaseSensitive: true,
     })
   );
@@ -106,29 +135,31 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       // Parse input: owner/repo or owner/repo@branch
-      let owner, repo, branch;
-      if (input.includes("@")) {
-        const atSplit = input.split("@");
-        const parts = atSplit[0].split("/").filter(Boolean);
-        if (parts.length !== 2) {
-          vscode.window.showErrorMessage("Invalid format. Use: owner/repo or owner/repo@branch");
-          return;
-        }
-        owner = parts[0];
-        repo = parts[1];
-        branch = atSplit[1] || "main";
+      // Split on first "@" after owner/repo
+      const parts = input.split("/").filter(Boolean);
+      if (parts.length < 2) {
+        vscode.window.showErrorMessage("Invalid format. Use: owner/repo or owner/repo@branch");
+        return;
+      }
+      const owner = parts[0];
+      const rest = parts.slice(1).join("/");
+      const atIndex = rest.indexOf("@");
+
+      let repo: string, inputBranch: string;
+      if (atIndex !== -1) {
+        repo = rest.slice(0, atIndex);
+        inputBranch = rest.slice(atIndex + 1);
       } else {
-        const parts = input.split("/").filter(Boolean);
-        if (parts.length !== 2) {
-          vscode.window.showErrorMessage("Invalid format. Use: owner/repo or owner/repo@branch");
-          return;
-        }
-        owner = parts[0];
-        repo = parts[1];
-        branch = "main";
+        repo = rest;
+        inputBranch = "";
       }
 
-      const url = branch === "main" ? `#/${owner}/${repo}` : `#/${owner}/${repo}@${branch}`;
+      if (!repo) {
+        vscode.window.showErrorMessage("Invalid format. Use: owner/repo or owner/repo@branch");
+        return;
+      }
+
+      const url = inputBranch ? `#/${owner}/${repo}@${inputBranch}` : `#/${owner}/${repo}`;
       vscode.window.showInformationMessage(
         `Update the browser URL to ${url} and reload the page.`
       );
@@ -136,7 +167,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   vscode.window.showInformationMessage(
-    `GitHub Viewer loaded: ${parsed.owner}/${parsed.repo}@${parsed.branch}`
+    `GitHub Viewer loaded: ${parsed.owner}/${parsed.repo}@${branch}`
   );
 }
 
@@ -165,55 +196,26 @@ class GitHubFileSystem implements vscode.FileSystemProvider, vscode.Disposable {
 
   async stat(uri: vscode.Uri): Promise<vscode.FileStat> {
     const parsed = this.ensureParsed(uri);
-    this.githubClient.setRepository(parsed.owner, parsed.repo, parsed.branch);
 
     // Block access to .vscode directory
     if (this.isVSCodeDirectory(parsed.repoPath)) {
       throw vscode.FileSystemError.FileNotFound(uri);
     }
 
-    try {
-      await this.githubClient.listDirectory(parsed.repoPath);
-      return {
-        type: vscode.FileType.Directory,
-        ctime: 0,
-        mtime: 0,
-        size: 0,
-      };
-    } catch (dirError) {
-      // If contents API was blocked (e.g., 403) try git tree to confirm directory existence
-      const status = (dirError as any)?.status;
-      if (status === 403) {
-        try {
-          await this.githubClient.listDirectoryViaGitTree(parsed.repoPath);
-          return {
-            type: vscode.FileType.Directory,
-            ctime: 0,
-            mtime: 0,
-            size: 0,
-          };
-        } catch {
-          // fall through to file check
-        }
-      }
-
-      try {
-        const content = await this.githubClient.getFileContent(parsed.repoPath);
-        return {
-          type: vscode.FileType.File,
-          ctime: 0,
-          mtime: 0,
-          size: content.length,
-        };
-      } catch (fileError) {
-        throw vscode.FileSystemError.FileNotFound(uri);
-      }
+    const info = await this.githubClient.getPathInfo(parsed.repoPath);
+    if (!info) {
+      throw vscode.FileSystemError.FileNotFound(uri);
     }
+    return {
+      type: info.type === "dir" ? vscode.FileType.Directory : vscode.FileType.File,
+      ctime: 0,
+      mtime: 0,
+      size: info.size,
+    };
   }
 
   async readDirectory(uri: vscode.Uri): Promise<[string, vscode.FileType][]> {
     const parsed = this.ensureParsed(uri);
-    this.githubClient.setRepository(parsed.owner, parsed.repo, parsed.branch);
 
     try {
       const entries = await this.githubClient.listDirectory(parsed.repoPath);
@@ -236,7 +238,6 @@ class GitHubFileSystem implements vscode.FileSystemProvider, vscode.Disposable {
 
   async readFile(uri: vscode.Uri): Promise<Uint8Array> {
     const parsed = this.ensureParsed(uri);
-    this.githubClient.setRepository(parsed.owner, parsed.repo, parsed.branch);
 
     // Block access to .vscode directory
     if (this.isVSCodeDirectory(parsed.repoPath)) {
@@ -281,7 +282,7 @@ class GitHubFileSystem implements vscode.FileSystemProvider, vscode.Disposable {
     const parsed = parseRepositoryFromUri(uri);
     if (!parsed) {
       throw vscode.FileSystemError.Unavailable(
-        "Invalid URI. Expected format: memfs://owner/repo/branch/path"
+        "Invalid URI. Expected authority format: owner/repo@branch"
       );
     }
     return parsed;

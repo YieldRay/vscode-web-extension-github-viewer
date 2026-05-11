@@ -42,9 +42,15 @@ export class GitHubClient {
    * Set the current repository to fetch files from
    */
   setRepository(owner: string, repo: string, branch: string = "main"): void {
-    // Reset cache when repository changes
-    this.fileCache.clear();
-    this.currentRepo = { owner, repo, branch };
+    // Only reset cache when repository actually changes
+    if (
+      this.currentRepo?.owner !== owner ||
+      this.currentRepo?.repo !== repo ||
+      this.currentRepo?.branch !== branch
+    ) {
+      this.fileCache.clear();
+      this.currentRepo = { owner, repo, branch };
+    }
   }
 
   /**
@@ -52,6 +58,42 @@ export class GitHubClient {
    */
   getCurrentRepo(): GitHubRepoInfo | null {
     return this.currentRepo;
+  }
+
+  /**
+   * Determine the type (file or directory) and size of a path via a single API call.
+   * Returns null if the path does not exist.
+   */
+  async getPathInfo(filePath: string): Promise<{ type: "file" | "dir"; size: number } | null> {
+    if (!this.currentRepo) {
+      throw new Error("Repository not set");
+    }
+
+    try {
+      const response = await this.octokit.repos.getContent({
+        owner: this.currentRepo.owner,
+        repo: this.currentRepo.repo,
+        path: filePath === "/" || filePath === "" ? "" : filePath,
+        ref: this.currentRepo.branch,
+      });
+
+      if (Array.isArray(response.data)) {
+        return { type: "dir", size: 0 };
+      }
+
+      const data = response.data as any;
+      return { type: data.type === "dir" ? "dir" : "file", size: data.size || 0 };
+    } catch (error: any) {
+      if (error?.status === 404) {
+        return null;
+      }
+      this.handleRateLimitError(error);
+      // 403 on a directory could mean it's too large; still exists
+      if (error?.status === 403) {
+        return { type: "dir", size: 0 };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -83,7 +125,7 @@ export class GitHubClient {
       // Decode base64 content
       const content = response.data as any;
       if (content.encoding === "base64" && content.content) {
-        const binaryString = atob(content.content);
+        const binaryString = atob(content.content.replace(/\n/g, ""));
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
           bytes[i] = binaryString.charCodeAt(i);
@@ -101,11 +143,16 @@ export class GitHubClient {
       // Check for rate limit errors
       this.handleRateLimitError(error);
 
-      // GitHub's contents API returns 403 for files over 1 MB; fall back to raw URL fetch
+      // GitHub's contents API returns 403 for files over 1 MB; fall back to raw URL fetch.
+      // For public repos this is almost always a size limit; access-denied repos return 404.
       if (error?.status === 403) {
-        const bytes = await this.fetchRawContent(filePath);
-        this.fileCache.set(cacheKey, bytes);
-        return bytes;
+        try {
+          const bytes = await this.fetchRawContent(filePath);
+          this.fileCache.set(cacheKey, bytes);
+          return bytes;
+        } catch {
+          throw new Error(`Access denied or file too large to fetch: ${filePath}`);
+        }
       }
 
       throw error;
@@ -256,12 +303,28 @@ export class GitHubClient {
         description: response.data.description,
         url: response.data.html_url,
         stars: response.data.stargazers_count,
-        branches: response.data.default_branch,
+        defaultBranch: response.data.default_branch,
       };
     } catch (error: any) {
       if (error?.status === 404) {
         throw new Error(`Repository not found: ${this.currentRepo.owner}/${this.currentRepo.repo}`);
       }
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch the default branch name for a given owner/repo (does not require setRepository).
+   */
+  async getDefaultBranch(owner: string, repo: string): Promise<string> {
+    try {
+      const response = await this.octokit.repos.get({ owner, repo });
+      return response.data.default_branch;
+    } catch (error: any) {
+      if (error?.status === 404) {
+        throw new Error(`Repository not found: ${owner}/${repo}`);
+      }
+      this.handleRateLimitError(error);
       throw error;
     }
   }
@@ -275,12 +338,29 @@ export class GitHubClient {
     }
 
     try {
-      const response = await this.octokit.repos.listBranches({
-        owner: this.currentRepo.owner,
-        repo: this.currentRepo.repo,
-      });
+      const branches: string[] = [];
+      let page = 1;
+      const perPage = 100;
 
-      return response.data.map((branch: any) => branch.name);
+      while (true) {
+        const response = await this.octokit.repos.listBranches({
+          owner: this.currentRepo.owner,
+          repo: this.currentRepo.repo,
+          per_page: perPage,
+          page,
+        });
+
+        for (const branch of response.data) {
+          branches.push((branch as any).name);
+        }
+
+        if (response.data.length < perPage) {
+          break;
+        }
+        page++;
+      }
+
+      return branches;
     } catch (error: any) {
       if (error?.status === 404) {
         throw new Error(`Repository not found: ${this.currentRepo.owner}/${this.currentRepo.repo}`);

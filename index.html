@@ -10,7 +10,7 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Code" />
-    <link rel="apple-touch-icon" href="https://raw.esm.sh/code-oss@1.108.1/code-192.png" />
+    <link rel="apple-touch-icon" href="https://raw.esm.sh/code-oss@1.119.0/code-192.png" />
 
     <!-- Disable pinch zooming -->
     <meta
@@ -19,108 +19,187 @@
     />
 
     <!-- Workbench Icon/Manifest/CSS -->
-    <link rel="icon" href="https://raw.esm.sh/code-oss@1.108.1/favicon.ico" type="image/x-icon" />
-    <link rel="stylesheet" href="https://raw.esm.sh/code-oss@1.108.1/out/vs/workbench/workbench.web.main.internal.css" />
+    <link rel="icon" href="https://raw.esm.sh/code-oss@1.119.0/favicon.ico" type="image/x-icon" />
+    <link rel="stylesheet" href="https://raw.esm.sh/code-oss@1.119.0/out/vs/workbench/workbench.web.main.internal.css" />
   </head>
 
   <body aria-label=""></body>
 
   <!-- Startup (do not modify order of script tags!) -->
   <script>
-    const baseUrl = new URL("https://raw.esm.sh/code-oss@1.108.1/out/", window.location.href);
+    const baseUrl = new URL("https://raw.esm.sh/code-oss@1.119.0/out/", window.location.href);
     globalThis._VSCODE_FILE_ROOT = baseUrl.origin + baseUrl.pathname;
   </script>
   <script>
     performance.mark("code/willLoadWorkbenchMain");
   </script>
   <!-- always ensure built in english NLS messages -->
-  <script type="module" src="https://raw.esm.sh/code-oss@1.108.1/out/nls.messages.js"></script>
+  <script type="module" src="https://raw.esm.sh/code-oss@1.119.0/out/nls.messages.js"></script>
   <!-- attempt to load NLS messages in case non-english -->
-  <script type="module" src="https://raw.esm.sh/code-oss@1.108.1/out/nls.messages.js"></script>
+  <script type="module" src="https://raw.esm.sh/code-oss@1.119.0/out/nls.messages.js"></script>
   <script type="module">
-    import init from "https://raw.esm.sh/code-oss@1.108.1/workbench.js";
+    import init from "https://raw.esm.sh/code-oss@1.119.0/workbench.js";
 
     // Parse hash route: #/owner/repo or #/owner/repo@branch
+    // Branch is optional — when omitted, the extension resolves the default branch via GitHub API.
+    // Returns null for invalid input, or undefined when no hash is present (landing page).
     function parseHashRoute() {
       let hash = window.location.hash.slice(1); // Remove #
       if (!hash) {
-        // Default to microsoft/vscode main branch
-        return { owner: "microsoft", repo: "vscode", branch: "main" };
+        return undefined; // no repo specified — show landing page
       }
 
       // Remove leading slash if present
       hash = hash.replace(/^\/+/, "");
-      
-      // Format: owner/repo@branch or owner/repo (defaults to main)
+      if (!hash) {
+        return undefined;
+      }
+
+      // Format: owner/repo@branch or owner/repo
+      // Split on first "@" — repo names cannot contain "@" on GitHub,
+      // so everything before the first "@" after owner/repo is the repo,
+      // everything after is the branch (which may contain slashes, @, etc.).
       let owner, repo, branch;
-      
-      if (hash.includes("@")) {
-        // Format: owner/repo@branch
-        const atSplit = hash.split("@");
-        const beforeAt = atSplit[0];
-        branch = atSplit[1] || "main";
-        
-        const parts = beforeAt.split("/").filter(Boolean);
-        if (parts.length !== 2) {
-          console.error("Invalid hash route. Expected: #/owner/repo or #/owner/repo@branch");
-          return null;
-        }
-        owner = parts[0];
-        repo = parts[1];
+      const parts = hash.split("/").filter(Boolean);
+      if (parts.length < 2) {
+        console.error("Invalid hash route. Expected: #/owner/repo or #/owner/repo@branch");
+        return null;
+      }
+      owner = parts[0];
+      // Rejoin remaining parts in case repo or branch contain nothing odd
+      const rest = parts.slice(1).join("/");
+
+      const atIndex = rest.indexOf("@");
+      if (atIndex !== -1) {
+        repo = rest.slice(0, atIndex);
+        branch = rest.slice(atIndex + 1);
       } else {
-        // Format: owner/repo (defaults to main branch)
-        const parts = hash.split("/").filter(Boolean);
-        if (parts.length !== 2) {
-          console.error("Invalid hash route. Expected: #/owner/repo or #/owner/repo@branch");
-          return null;
-        }
-        owner = parts[0];
-        repo = parts[1];
-        branch = "main";
+        repo = rest;
+        branch = ""; // will be resolved by extension via GitHub API
+      }
+
+      if (!repo) {
+        console.error("Invalid hash route. Expected: #/owner/repo or #/owner/repo@branch");
+        return null;
       }
 
       return { owner, repo, branch };
     }
 
-    const repoInfo = parseHashRoute();
-    if (!repoInfo) {
-      document.body.textContent = "Invalid repository URL. Expected: #/owner/repo or #/owner/repo@branch";
+    /**
+     * Encode repo info into a URI authority string.
+     * Format: owner%2Frepo%40branch (fully percent-encoded for URI compliance).
+     * The "/" between owner/repo and "@" between repo/branch are encoded
+     * so the authority is a valid URI component with no ambiguous delimiters.
+     * When branch is empty, the extension will resolve the default branch.
+     */
+    function encodeAuthority(owner, repo, branch) {
+      if (branch) {
+        return `${encodeURIComponent(owner)}%2F${encodeURIComponent(repo)}%40${encodeURIComponent(branch)}`;
+      }
+      return `${encodeURIComponent(owner)}%2F${encodeURIComponent(repo)}`;
     }
 
-    init(document.body, {
-      productConfiguration: {
-        extensionsGallery: {
-          serviceUrl: "https://open-vsx.org/vscode/gallery",
-          itemUrl: "https://open-vsx.org/vscode/item",
-          resourceUrlTemplate: "https://openvsxorg.blob.core.windows.net/resources/{publisher}/{name}/{version}/{path}",
-        },
-        extensionEnabledApiProposals: {},
-        /** IMPORTANT CONFIG TO MAKE webWorkerExtensionHostIframe.html work */
-        webEndpointUrlTemplate: "https://unpkg.com/code-oss@1.108.1",
-        quality: "stable",
-      },
-      folderUri: {
-        scheme: "memfs",
-        authority: repoInfo ? repoInfo.owner : "",
-        query: "",
-        path: repoInfo ? `/${repoInfo.repo}/${repoInfo.branch}` : "/",
-      },
-      additionalBuiltinExtensions: [
-        {
-          scheme: location.protocol.replace(":", ""),
-          authority: location.host,
-          path: location.pathname + "extension/dist",
-        },
-      ],
-    });
+    /**
+     * Show a landing page with an input form for entering a GitHub repository.
+     */
+    function showLandingPage() {
+      document.body.innerHTML = "";
+      document.body.style.cssText = "margin:0;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#1e1e1e;color:#d4d4d4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;";
 
-    // Listen for hash changes
-    window.addEventListener("hashchange", () => {
-      const newRepoInfo = parseHashRoute();
-      if (newRepoInfo) {
-        // Reload the workspace with new repository
+      const container = document.createElement("div");
+      container.style.cssText = "text-align:center;max-width:480px;padding:2rem;";
+
+      container.innerHTML = `
+        <h1 style="font-size:1.8rem;font-weight:600;margin-bottom:0.5rem;color:#e8e8e8;">GitHub Viewer</h1>
+        <p style="color:#888;margin-bottom:1.5rem;line-height:1.5;">
+          Browse any public GitHub repository with VS Code in your browser.<br>
+          Enter a repository below, or add <code style="background:#2d2d2d;padding:0.15em 0.4em;border-radius:3px;font-size:0.9em;">#/owner/repo</code> to the URL.
+        </p>
+        <form id="repo-form" style="display:flex;gap:0.5rem;margin-bottom:1.5rem;">
+          <input
+            id="repo-input"
+            type="text"
+            placeholder="owner/repo or owner/repo@branch"
+            autocomplete="off"
+            spellcheck="false"
+            style="flex:1;padding:0.6rem 0.8rem;border:1px solid #404040;border-radius:4px;background:#2d2d2d;color:#d4d4d4;font-size:0.95rem;outline:none;"
+          />
+          <button
+            type="submit"
+            style="padding:0.6rem 1.2rem;border:none;border-radius:4px;background:#0078d4;color:#fff;font-size:0.95rem;cursor:pointer;"
+          >Open</button>
+        </form>
+        <p style="color:#666;font-size:0.85rem;">
+          Try: <a href="#/YieldRay/vscode-web-extension-github-viewer" style="color:#4daafc;text-decoration:none;">YieldRay/vscode-web-extension-github-viewer</a>
+        </p>
+      `;
+
+      document.body.appendChild(container);
+
+      const form = document.getElementById("repo-form");
+      const input = document.getElementById("repo-input");
+      input.focus();
+
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const value = input.value.trim();
+        if (!value) return;
+        // Navigate by setting the hash — the hashchange listener will reload
+        window.location.hash = `#/${value}`;
+      });
+    }
+
+    const repoInfo = parseHashRoute();
+
+    if (repoInfo === undefined) {
+      // No repo specified — show landing page
+      showLandingPage();
+
+      // If user clicks an example link or submits the form, the hash changes
+      window.addEventListener("hashchange", () => {
         window.location.reload();
-      }
-    });
+      });
+    } else if (repoInfo === null) {
+      document.body.textContent = "Invalid repository URL. Expected: #/owner/repo or #/owner/repo@branch";
+      throw new Error("Invalid repository URL");
+    } else {
+      // Valid repo — launch VS Code workbench
+      init(document.body, {
+        productConfiguration: {
+          extensionsGallery: {
+            serviceUrl: "https://open-vsx.org/vscode/gallery",
+            itemUrl: "https://open-vsx.org/vscode/item",
+            resourceUrlTemplate: "https://openvsxorg.blob.core.windows.net/resources/{publisher}/{name}/{version}/{path}",
+          },
+          extensionEnabledApiProposals: {},
+          /** IMPORTANT CONFIG TO MAKE webWorkerExtensionHostIframe.html work */
+          webEndpointUrlTemplate: "https://unpkg.com/code-oss@1.119.0",
+          quality: "stable",
+        },
+        folderUri: {
+          scheme: "github",
+          authority: encodeAuthority(repoInfo.owner, repoInfo.repo, repoInfo.branch),
+          query: "",
+          path: "/",
+        },
+        additionalBuiltinExtensions: [
+          {
+            scheme: location.protocol.replace(":", ""),
+            authority: location.host,
+            path: location.pathname + "extension/dist",
+          },
+        ],
+      });
+
+      // Listen for hash changes
+      window.addEventListener("hashchange", () => {
+        const newRepoInfo = parseHashRoute();
+        if (newRepoInfo) {
+          // Reload the workspace with new repository
+          window.location.reload();
+        }
+      });
+    }
   </script>
 </html>
