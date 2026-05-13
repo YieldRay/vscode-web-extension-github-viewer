@@ -15,10 +15,19 @@ export class GitHubClient {
   private fileCache = new Map<string, Uint8Array>();
 
   constructor(token?: string) {
+    const fetchFn: typeof fetch = (input, init) => {
+      const request = new Request(input, init);
+      const url = `https://fetch.val.run/${request.url}`;
+      return fetch(url, {
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+      });
+    };
     this.octokit = new Octokit({
       auth: token,
       request: {
-        fetch: fetch,
+        fetch: fetchFn,
       },
     });
   }
@@ -27,14 +36,16 @@ export class GitHubClient {
    * Check if error is a rate limit error and throw user-friendly message
    */
   private handleRateLimitError(error: any): void {
-    if (error?.status === 403 && error?.message?.toLowerCase().includes('rate limit')) {
-      const resetTime = error?.response?.headers?.['x-ratelimit-reset'];
-      const resetDate = resetTime ? new Date(parseInt(resetTime) * 1000).toLocaleTimeString() : 'unknown';
-      throw new Error(`GitHub API rate limit exceeded. Resets at ${resetDate}. Please provide a GitHub token to increase your rate limit.`);
+    if (error?.status === 403 && error?.message?.toLowerCase().includes("rate limit")) {
+      const resetTime = error?.response?.headers?.["x-ratelimit-reset"];
+      const resetDate = resetTime ? new Date(parseInt(resetTime) * 1000).toLocaleTimeString() : "unknown";
+      throw new Error(
+        `GitHub API rate limit exceeded. Resets at ${resetDate}. Please provide a GitHub token to increase your rate limit.`,
+      );
     }
 
     if (error?.status === 429) {
-      throw new Error('GitHub API rate limit exceeded. Please wait a moment or provide a GitHub token.');
+      throw new Error("GitHub API rate limit exceeded. Please wait a moment or provide a GitHub token.");
     }
   }
 
@@ -43,11 +54,7 @@ export class GitHubClient {
    */
   setRepository(owner: string, repo: string, branch: string = "main"): void {
     // Only reset cache when repository actually changes
-    if (
-      this.currentRepo?.owner !== owner ||
-      this.currentRepo?.repo !== repo ||
-      this.currentRepo?.branch !== branch
-    ) {
+    if (this.currentRepo?.owner !== owner || this.currentRepo?.repo !== repo || this.currentRepo?.branch !== branch) {
       this.fileCache.clear();
       this.currentRepo = { owner, repo, branch };
     }
@@ -276,10 +283,10 @@ export class GitHubClient {
       if (error?.status === 404) {
         throw new Error(`Repository or branch not found: ${owner}/${repo}@${branch}`);
       }
-      
+
       // Check for rate limit errors
       this.handleRateLimitError(error);
-      
+
       throw error;
     }
   }

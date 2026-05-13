@@ -29,6 +29,18 @@
   <script>
     const baseUrl = new URL("https://raw.esm.sh/code-oss@1.119.0/out/", window.location.href);
     globalThis._VSCODE_FILE_ROOT = baseUrl.origin + baseUrl.pathname;
+
+    if (window.trustedTypes) {
+      const cdnOrigin = new URL(baseUrl).origin;
+      globalThis._VSCODE_WEB_PACKAGE_TTP = window.trustedTypes.createPolicy("amdLoader", {
+        createScriptURL(value) {
+          if (value.startsWith(window.location.origin) || value.startsWith(cdnOrigin)) {
+            return value;
+          }
+          throw new Error(`[trusted_script_src] Invalid script url: ${value}`);
+        },
+      });
+    }
   </script>
   <script>
     performance.mark("code/willLoadWorkbenchMain");
@@ -174,7 +186,7 @@
           },
           extensionEnabledApiProposals: {},
           /** IMPORTANT CONFIG TO MAKE webWorkerExtensionHostIframe.html work */
-          webEndpointUrlTemplate: "https://unpkg.com/code-oss@1.119.0",
+          webEndpointUrlTemplate: "https://raw.esm.sh/code-oss@1.119.0",
           quality: "stable",
         },
         folderUri: {
@@ -187,7 +199,7 @@
           {
             scheme: location.protocol.replace(":", ""),
             authority: location.host,
-            path: location.pathname + "extension/dist",
+            path: new URL("extension/dist", location.href).pathname,
           },
         ],
       });
